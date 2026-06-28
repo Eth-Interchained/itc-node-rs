@@ -1,28 +1,29 @@
-//! itc-oracle — the ITC-L2 deposit oracle.
+//! itc-oracle — the ITC-L2 UTXO mirror oracle.
 //!
-//! Scans every ITC L1 block the node downloads for transactions that send ITC to
-//! the bridge lock address. When one is found it:
-//!   1. Extracts the sender's compressed secp256k1 pubkey from the first P2PKH input.
-//!   2. Derives the aITC (Ethereum) address: keccak256(uncomp[1..])[12:]
-//!   3. Waits for DEPOSIT_CONFIRMATIONS L1 blocks.
-//!   4. Mints native aITC to that address in the EVM state (NEDB evm_accounts).
-//!      The NEDB record carries caused_by: [L1_txid] — full provenance.
+//! Scans every ITC L1 block the node downloads and mirrors the complete P2PKH
+//! UTXO set as native aITC balances on L2. No bridge action required — once
+//! you sign any ITC transaction on mainnet, your full accumulated balance
+//! appears on L2 automatically.
 //!
-//! This is trustless in the deposit direction: the Bitcoin ECDSA signature already
-//! in the downloaded block is the proof. No OP_RETURN, no external oracle, no faking.
+//! Two-stage mirror (required because Bitcoin P2PKH hides the pubkey until spend):
+//!   Stage 1 (receive): P2PKH output → accumulate sats in pending[hash160]
+//!   Stage 2 (spend):   P2PKH input reveals pubkey → derive ETH address
+//!                       → credit pending balance + all future outputs immediately
 //!
 //! © Interchained LLC × Claude Sonnet 4.6
 
 pub mod deposit;
 pub mod oracle;
+pub mod utxo;
 
 pub use oracle::{DepositOracle, OracleConfig};
+pub use utxo::UtxoMirror;
 
-/// ITC mainnet satoshis per coin (1 ITC = 1e8 satoshis).
+/// ITC mainnet satoshis per coin.
 pub const SATS_PER_ITC: u64 = 100_000_000;
-/// Satoshis → aITC wei conversion (1 satoshi = 1e10 wei so 1 ITC = 1e18 wei).
+/// 1 satoshi = 10^10 wei (so 1 ITC = 10^18 wei, matching Ethereum).
 pub const SATS_TO_WEI_FACTOR: u64 = 10_000_000_000;
-/// Required L1 confirmations before minting aITC.
+/// Required L1 confirmations for legacy deposit scanner.
 pub const DEPOSIT_CONFIRMATIONS: i32 = 3;
-/// Minimum deposit in satoshis (reject dust).
-pub const MIN_DEPOSIT_SATS: u64 = 10_000; // 0.0001 ITC
+/// Minimum deposit in satoshis.
+pub const MIN_DEPOSIT_SATS: u64 = 10_000;
