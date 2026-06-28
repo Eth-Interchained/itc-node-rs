@@ -26,10 +26,11 @@
 | 2 | Real ITC P2P protocol + anchor handshake | ✅ merged |
 | 3 | Forward header sync + seeding server | ✅ merged |
 | 4 | NEDB-backed header/block/tip persistence | ✅ merged |
-| 5 | EVM execution engine (revm + NEDB state) | 🔜 next |
-| 6 | ITC ERC-20 + sentinel bridge daemon | 🔜 |
+| 5 | Full block download + peer sync (block bodies, inv/getdata) | 🔜 next |
+| 6 | EVM execution engine (revm + NEDB state) | 🔜 |
 | 7 | L1 anchor OP_RETURN poster | 🔜 |
 | 8 | eth_* JSON-RPC server | 🔜 |
+| — | Bridge (mint/exit sentinel) | separate repo (itc-bridge) |
 
 ---
 
