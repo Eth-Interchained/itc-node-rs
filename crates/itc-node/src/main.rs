@@ -30,7 +30,7 @@ use itc_proto as proto;
 
 use itc_anchor::{AnchorConfig, AnchorPoster};
 use itc_evm::ItcEvm;
-use itc_oracle::{DepositOracle, OracleConfig};
+use itc_oracle::{DepositOracle, OracleConfig, UtxoMirror};
 use itc_rpc::RpcServer;
 
 use crate::chain::HeaderChain;
@@ -106,16 +106,12 @@ fn main() {
         store.head(),
     );
 
-    // ── 3. Deposit oracle setup ───────────────────────────────────────────────
-    // The oracle processes each block as it's downloaded, detecting bridge deposits
-    // and minting native aITC after DEPOSIT_CONFIRMATIONS confirmations.
-    // Configure ITC_BRIDGE_HASH160 (20-byte hex) to activate live deposits.
-    let oracle_config = OracleConfig::from_env();
-    let mut oracle = DepositOracle::new(oracle_config, Arc::clone(&store.db));
-    println!(
-        "itc-node[oracle]: deposit scanner armed (ITC_BRIDGE_HASH160={})",
-        hex::encode(itc_oracle::OracleConfig::from_env().bridge_lock_hash160)
-    );
+    // ── 3. UTXO mirror oracle ─────────────────────────────────────────────────
+    // Mirrors the entire ITC L1 UTXO set as native aITC on L2. No bridge action
+    // needed — once a user signs any ITC tx on mainnet, their full balance appears
+    // on L2 automatically. The oracle processes each block as it is downloaded.
+    let mut utxo_mirror = UtxoMirror::open(Arc::clone(&store.db));
+    println!("itc-node[oracle]: UTXO mirror armed — scanning all P2PKH outputs");
 
     // ── 4. Block body download ────────────────────────────────────────────────
     // Download full block bodies for every height we have a header for.
@@ -131,6 +127,26 @@ fn main() {
         Err(e) => eprintln!("itc-node: block download error (partial progress saved): {e}"),
     }
     println!("itc-node: engine head after sync: {}", store.head());
+
+    // ── 3b. UTXO mirror scan — process all downloaded blocks ─────────────────
+    // Walk height 1 → tip, run each raw block through the mirror. Happens once
+    // on first run (or after new blocks are downloaded). Fast on warm start
+    // because UtxoMirror::open() restores the key/pending maps from NEDB.
+    {
+        let tip = chain.tip_height();
+        println!("itc-node[oracle]: scanning blocks 1..{tip} through UTXO mirror...");
+        let mut total_minted = 0u64;
+        for h in 1..=tip {
+            if let Some(hash) = chain.active_hash_at(h) {
+                let hash_hex = itc_proto::hashes::to_internal_hex(&hash);
+                if let Some(raw) = store.get_block(&hash_hex) {
+                    let (credits, _wei) = utxo_mirror.process_block(&raw, h);
+                    total_minted += credits;
+                }
+            }
+        }
+        println!("itc-node[oracle]: mirror scan done — {total_minted} total credits");
+    }
 
     // ── 4. L1 anchor poster — sovereignty proof on ITC mainnet ───────────────
     // Spawns a background thread that fires every ITC_ANCHOR_INTERVAL epochs and
