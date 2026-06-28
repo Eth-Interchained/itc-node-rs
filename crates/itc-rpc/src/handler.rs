@@ -287,10 +287,15 @@ fn decode_raw_tx(raw: &[u8]) -> Result<(TxEnv, revm::primitives::B256), String> 
         return Err(format!("invalid 'to' length {}", to_bytes.len()));
     };
 
-    // Recover sender from signature (v, r, s fields 6, 7, 8)
-    // For v1, we accept the tx without verifying the sender — just use a zero address.
-    // Full sig recovery with k256/secp256k1 lands in a follow-up.
-    let caller = Address::ZERO; // TODO: recover from sig
+    // Recover sender via EIP-155 ecrecover.
+    // keccak256(RLP(nonce, gas_price, gas_limit, to, value, data, chain_id, 0, 0))
+    // → recover pubkey from (v, r, s) → keccak256(pubkey_uncompressed[1..])[12..]
+    let caller = crate::ecrecover::recover_sender(raw, itc_evm::CHAIN_ID)
+        .map(Address::from)
+        .unwrap_or_else(|| {
+            // Recovery failed (e.g. wrong chain_id, malformed sig) — reject the tx.
+            Address::ZERO
+        });
 
     // tx_hash = keccak256(raw_tx_bytes)
     use revm::primitives::keccak256;
