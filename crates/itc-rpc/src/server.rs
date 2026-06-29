@@ -5,7 +5,6 @@
 //!
 //! Bind address: `ITC_RPC_ADDR` env var, default `0.0.0.0:8545`.
 
-use std::io::Cursor;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc, Mutex,

@@ -37,6 +37,7 @@ pub struct PendingTx {
     /// Recovered sender address.
     pub from: Address,
     /// Gas limit from the tx.
+    #[allow(dead_code)]
     pub gas_limit: u64,
 }
 
@@ -45,6 +46,7 @@ pub struct PendingTx {
 pub struct TxReceipt {
     pub tx_hash: B256,
     pub from: Address,
+    #[allow(dead_code)]
     pub block_number: u64,
     pub gas_used: u64,
     pub success: bool,
@@ -59,6 +61,7 @@ pub fn new_mempool() -> Mempool {
 }
 
 /// Add a transaction to the mempool (called by eth_sendRawTransaction).
+#[allow(dead_code)]
 pub fn submit_tx(mempool: &Mempool, tx: PendingTx) {
     mempool.lock().unwrap().push_back(tx);
 }
@@ -182,7 +185,7 @@ impl Sequencer {
 
 fn build_tx_env_from_pending(tx: &PendingTx) -> Option<revm::primitives::TxEnv> {
     use rlp::Rlp;
-    use revm::primitives::{Bytes, TransactTo, TxEnv};
+    use revm::primitives::{Bytes, TransactTo, TxEnv, U256};
 
     let rlp = Rlp::new(&tx.raw);
     if !rlp.is_list() { return None; }
