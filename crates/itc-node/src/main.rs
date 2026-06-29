@@ -34,7 +34,6 @@ use std::sync::Mutex;
 
 use itc_anchor::{AnchorConfig, AnchorPoster};
 use itc_evm::ItcEvm;
-use itc_oracle::UtxoMirror;
 use itc_rpc::RpcServer;
 
 use crate::sequencer::{new_mempool, Sequencer};
@@ -43,11 +42,9 @@ use crate::chain::HeaderChain;
 use crate::store::Store;
 
 fn main() {
-    // P2P serve port — use ITC_P2P_PORT to avoid conflicting with interchainedd (17333).
-    // Recommended: ITC_P2P_PORT=17334 when running alongside interchainedd on same host.
-    let listen_port: u16 = std::env::var("ITC_P2P_PORT")
-        .ok().and_then(|s| s.parse().ok())
-        .or_else(|| std::env::args().nth(1).and_then(|s| s.parse().ok()))
+    let listen_port: u16 = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
         .unwrap_or(proto::DEFAULT_P2P_PORT);
     let datadir = std::env::var("ITC_NODE_DATADIR")
         .unwrap_or_else(|_| "./itc-node-data".to_string());
@@ -128,18 +125,12 @@ fn main() {
         store.head(),
     );
 
-    // ── 3. UTXO mirror oracle ─────────────────────────────────────────────────
-    // Mirrors the entire ITC L1 UTXO set as native aITC on L2. No bridge action
-    // needed — once a user signs any ITC tx on mainnet, their full balance appears
-    // on L2 automatically. The oracle processes each block as it is downloaded.
-    let mut utxo_mirror = UtxoMirror::open(Arc::clone(&store.db));
+    // Bridge oracle only — UTXO mirror removed (lock-and-mint is the sole aITC minting path).
     let oracle_start_height: i32 = std::env::var("ITC_ORACLE_START_HEIGHT")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
     if oracle_start_height > 1 {
-        println!("itc-node[oracle]: checkpoint start — scanning from height {oracle_start_height} (set ITC_ORACLE_START_HEIGHT=0 for full scan)");
+        println!("itc-node[oracle]: checkpoint start — scanning from height {oracle_start_height}");
     }
-    println!("itc-node[oracle]: UTXO mirror armed — scanning all P2PKH outputs");
-    // (Exit scanner is owned by the sequencer — wired in there)
 
     // ── 4. Block body download ────────────────────────────────────────────────
     // Download full block bodies for every height we have a header for.
@@ -170,25 +161,6 @@ fn main() {
         return;
     }
 
-    // ── 3b. UTXO mirror scan — process all downloaded blocks ─────────────────
-    // Walk height 1 → tip, run each raw block through the mirror. Happens once
-    // on first run (or after new blocks are downloaded). Fast on warm start
-    // because UtxoMirror::open() restores the key/pending maps from NEDB.
-    {
-        let tip = chain.tip_height();
-        println!("itc-node[oracle]: scanning blocks {oracle_start_height}..{tip} through UTXO mirror...");
-        let mut total_minted = 0u64;
-        for h in oracle_start_height..=tip {
-            if let Some(hash) = chain.active_hash_at(h) {
-                let hash_hex = itc_proto::hashes::to_internal_hex(&hash);
-                if let Some(raw) = store.get_block(&hash_hex) {
-                    let (credits, _wei) = utxo_mirror.process_block(&raw, h);
-                    total_minted += credits;
-                }
-            }
-        }
-        println!("itc-node[oracle]: mirror scan done — {total_minted} total credits");
-    }
 
     // ── 4. L1 anchor poster — sovereignty proof on ITC mainnet ───────────────
     // Spawns a background thread that fires every ITC_ANCHOR_INTERVAL epochs and
