@@ -8,6 +8,7 @@ description = "ITC-L2 eth_* JSON-RPC server — MetaMask-compatible Ethereum JSO
 
 [dependencies]
 itc-evm    = { path = "../itc-evm" }
+revm       = { version = "3", default-features = false, features = ["std"] }
 itc-proto  = { path = "../itc-proto" }
 nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", package = "nedb-engine" }
 

@@ -108,15 +108,15 @@ fn eip155_signing_hash(
 ) -> [u8; 32] {
     let chain_id_bytes = trim_leading_zeros(&chain_id.to_be_bytes());
     let mut stream = rlp::RlpStream::new_list(9);
-    stream.append(nonce);
-    stream.append(gas_price);
-    stream.append(gas_limit);
-    stream.append(to);
-    stream.append(value);
-    stream.append(data);
-    stream.append(&chain_id_bytes.as_slice());
-    stream.append(&b"".as_ref()); // 0
-    stream.append(&b"".as_ref()); // 0
+    stream.append(&nonce.to_vec());
+    stream.append(&gas_price.to_vec());
+    stream.append(&gas_limit.to_vec());
+    stream.append(&to.to_vec());
+    stream.append(&value.to_vec());
+    stream.append(&data.to_vec());
+    stream.append(&chain_id_bytes);
+    stream.append(&Vec::<u8>::new()); // 0
+    stream.append(&Vec::<u8>::new()); // 0
     keccak256_bytes(&stream.out())
 }
 
@@ -125,12 +125,12 @@ fn legacy_signing_hash(
     to: &[u8], value: &[u8], data: &[u8],
 ) -> [u8; 32] {
     let mut stream = rlp::RlpStream::new_list(6);
-    stream.append(nonce);
-    stream.append(gas_price);
-    stream.append(gas_limit);
-    stream.append(to);
-    stream.append(value);
-    stream.append(data);
+    stream.append(&nonce.to_vec());
+    stream.append(&gas_price.to_vec());
+    stream.append(&gas_limit.to_vec());
+    stream.append(&to.to_vec());
+    stream.append(&value.to_vec());
+    stream.append(&data.to_vec());
     keccak256_bytes(&stream.out())
 }
 
