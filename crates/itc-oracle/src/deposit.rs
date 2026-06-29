@@ -1,6 +1,6 @@
 //! Deposit detection — parse a raw L1 block and find bridge deposits.
 
-use itc_proto::script::{is_p2pkh_to, p2pkh_scriptsig_pubkey, pubkey_to_eth_address};
+use itc_proto::script::{is_p2pkh_to, is_p2wpkh_to, p2pkh_scriptsig_pubkey, pubkey_to_eth_address};
 use itc_proto::tx::{block_transactions, Tx};
 
 use crate::MIN_DEPOSIT_SATS;
@@ -46,7 +46,8 @@ fn extract_deposit(tx: &Tx, bridge_lock_hash160: &[u8; 20], l1_height: i32) -> O
     let deposited_sats: u64 = tx
         .outputs
         .iter()
-        .filter(|o| is_p2pkh_to(&o.script_pubkey, bridge_lock_hash160))
+        .filter(|o| is_p2pkh_to(&o.script_pubkey, bridge_lock_hash160)
+             || is_p2wpkh_to(&o.script_pubkey, bridge_lock_hash160))
         .map(|o| o.value)
         .sum();
 
