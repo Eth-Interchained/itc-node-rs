@@ -33,7 +33,7 @@ use std::sync::Mutex;
 
 use itc_anchor::{AnchorConfig, AnchorPoster};
 use itc_evm::ItcEvm;
-use itc_oracle::{DepositOracle, OracleConfig, UtxoMirror};
+use itc_oracle::UtxoMirror;
 use itc_rpc::RpcServer;
 
 use crate::sequencer::{new_mempool, Sequencer};

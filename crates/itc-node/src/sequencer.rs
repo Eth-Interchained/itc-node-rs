@@ -182,7 +182,7 @@ impl Sequencer {
 
 fn build_tx_env_from_pending(tx: &PendingTx) -> Option<revm::primitives::TxEnv> {
     use rlp::Rlp;
-    use revm::primitives::{Bytes, TransactTo, TxEnv, U256};
+    use revm::primitives::{Bytes, TransactTo, TxEnv};
 
     let rlp = Rlp::new(&tx.raw);
     if !rlp.is_list() { return None; }
