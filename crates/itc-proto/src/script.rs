@@ -8,6 +8,16 @@
 
 /// Check if a scriptPubKey is P2PKH paying to `hash160`.
 /// P2PKH template: OP_DUP OP_HASH160 OP_PUSH20 <hash160> OP_EQUALVERIFY OP_CHECKSIG
+/// Match a P2WPKH (bech32/segwit) output — script = OP_0 PUSH20 <hash160>
+/// Length 22: [0x00, 0x14, <20 bytes>]
+/// Used by itc1q... addresses (ITC bech32, same as Bitcoin bc1q...).
+pub fn is_p2wpkh_to(script: &[u8], hash160_target: &[u8; 20]) -> bool {
+    script.len() == 22
+        && script[0] == 0x00 // OP_0 (witness version 0)
+        && script[1] == 0x14 // push 20 bytes
+        && &script[2..22] == hash160_target
+}
+
 pub fn is_p2pkh_to(script: &[u8], hash160_target: &[u8; 20]) -> bool {
     script.len() == 25
         && script[0] == 0x76 // OP_DUP
