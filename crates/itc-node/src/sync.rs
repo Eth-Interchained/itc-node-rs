@@ -69,14 +69,14 @@ pub fn sync_headers(peer: &mut Peer, chain: &mut HeaderChain, store: &Store) -> 
 /// Walks the active chain from height 1 to tip, batching getdata requests.
 /// Already-stored blocks are skipped (idempotent, resume-safe).
 /// Returns (downloaded, skipped) counts.
-pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store) -> io::Result<(u64, u64)> {
+pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store, start_height: i32) -> io::Result<(u64, u64)> {
     let tip = chain.tip_height();
     if tip < 1 {
         return Ok((0, 0));
     }
     let mut downloaded = 0u64;
     let mut skipped = 0u64;
-    let mut height = 1i32;
+    let mut height = start_height.max(1);
 
     while height <= tip {
         let batch_end = (height + BLOCK_BATCH - 1).min(tip);

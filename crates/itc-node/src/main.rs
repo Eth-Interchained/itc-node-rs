@@ -116,6 +116,11 @@ fn main() {
     // needed — once a user signs any ITC tx on mainnet, their full balance appears
     // on L2 automatically. The oracle processes each block as it is downloaded.
     let mut utxo_mirror = UtxoMirror::open(Arc::clone(&store.db));
+    let oracle_start_height: i32 = std::env::var("ITC_ORACLE_START_HEIGHT")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(1).max(1);
+    if oracle_start_height > 1 {
+        println!("itc-node[oracle]: checkpoint start — scanning from height {oracle_start_height} (set ITC_ORACLE_START_HEIGHT=0 for full scan)");
+    }
     println!("itc-node[oracle]: UTXO mirror armed — scanning all P2PKH outputs");
     // (Exit scanner is owned by the sequencer — wired in there)
 
@@ -126,7 +131,7 @@ fn main() {
         "itc-node: downloading block bodies (tip height {}) — this may take a while ...",
         chain.tip_height()
     );
-    match sync::sync_blocks(&mut peer, &chain, &store) {
+    match sync::sync_blocks(&mut peer, &chain, &store, oracle_start_height) {
         Ok((downloaded, skipped)) => println!(
             "itc-node: block download done — {downloaded} downloaded, {skipped} already had"
         ),
@@ -140,9 +145,9 @@ fn main() {
     // because UtxoMirror::open() restores the key/pending maps from NEDB.
     {
         let tip = chain.tip_height();
-        println!("itc-node[oracle]: scanning blocks 1..{tip} through UTXO mirror...");
+        println!("itc-node[oracle]: scanning blocks {oracle_start_height}..{tip} through UTXO mirror...");
         let mut total_minted = 0u64;
-        for h in 1..=tip {
+        for h in oracle_start_height..=tip {
             if let Some(hash) = chain.active_hash_at(h) {
                 let hash_hex = itc_proto::hashes::to_internal_hex(&hash);
                 if let Some(raw) = store.get_block(&hash_hex) {
