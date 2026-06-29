@@ -230,7 +230,8 @@ impl DepositOracle {
         // Mint confirmed deposits
         let mut minted = Vec::new();
         let mut remaining = Vec::new();
-        for p in self.pending.drain(..) {
+        let drained: Vec<PendingDeposit> = self.pending.drain(..).collect();
+        for p in drained {
             if height < p.required_height {
                 remaining.push(p);
                 continue;
