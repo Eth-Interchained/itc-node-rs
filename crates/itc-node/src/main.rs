@@ -143,16 +143,26 @@ fn main() {
         let flush_db = Arc::clone(&store.db);
         ctrlc::set_handler(move || {
             if !flag.swap(true, Ordering::SeqCst) {
-                eprintln!("\nitc-node: shutdown signal received");
-                // Read the most recent tip and flush it to NEDB
-                let (h, hash) = *tip_ref.lock().unwrap();
+                eprintln!("\nitc-node: shutdown signal received — flushing...");
+                // Read tip from live_tip (updated every 2k blocks) or from NEDB directly
+                let (h, hash) = {
+                    let lt = *tip_ref.lock().unwrap();
+                    if lt.0 > 0 { lt } else {
+                        // Fallback: read current tip straight from NEDB
+                        let s = crate::store::Store::from_arc_db(Arc::clone(&flush_db));
+                        s.get_tip().unwrap_or((0, [0u8; 32]))
+                    }
+                };
                 if h > 0 {
+                    // Re-write to NEDB to confirm fsync
                     let s = crate::store::Store::from_arc_db(Arc::clone(&flush_db));
                     let _ = s.put_tip(h, &hash);
-                    eprintln!("itc-node: tip flushed at height {h}");
+                    eprintln!("itc-node: tip flushed at height {h} — safe to restart");
+                } else {
+                    eprintln!("itc-node: no tip to flush (sync not yet started)");
                 }
-                // Brief pause for NEDB fsync
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                // Give NEDB time to fsync
+                std::thread::sleep(std::time::Duration::from_millis(500));
                 eprintln!("itc-node: bye.");
                 std::process::exit(0);
             } else {
@@ -280,9 +290,10 @@ fn main() {
     {
         use itc_oracle::{DepositOracle, OracleConfig};
         use std::sync::atomic::AtomicBool;
-        let follow_db  = Arc::clone(&store.db);
-        let follow_ep  = endpoint.to_string();
-        let follow_osh = oracle_start_height;
+        let follow_db   = Arc::clone(&store.db);
+        let follow_ep   = endpoint.to_string();
+        let follow_osh  = oracle_start_height;
+        let follow_tip  = Arc::clone(&live_tip); // share with ctrlc handler
         std::thread::spawn(move || {
             println!("itc-node[l1-follow]: live sync thread started (60s interval)");
             loop {
@@ -311,6 +322,8 @@ fn main() {
                     }
                 }
                 let _ = s.put_tip(new_h, &chain.tip_hash());
+                // Update shared tip so Ctrl+C handler flushes the real current height
+                *follow_tip.lock().unwrap() = (new_h, chain.tip_hash());
                 println!("[L1] live: synced to height {new_h}");
             }
         });
