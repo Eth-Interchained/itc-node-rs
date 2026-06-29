@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use nedb_engine::Db;
 use revm::{
+    DatabaseCommit,
     db::CacheDB,
     primitives::{
         AccountInfo, Address, BlockEnv, Bytes, CfgEnv, ExecutionResult,
