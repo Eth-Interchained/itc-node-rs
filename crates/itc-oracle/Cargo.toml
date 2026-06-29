@@ -9,6 +9,7 @@ description = "ITC-L2 deposit oracle, UTXO mirror, and exit flow."
 [dependencies]
 itc-proto  = { path = "../itc-proto" }
 itc-evm    = { path = "../itc-evm" }
+revm       = { version = "3", default-features = false, features = ["std"] }
 itc-anchor = { path = "../itc-anchor" }
 
 nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", package = "nedb-engine" }
