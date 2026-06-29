@@ -43,9 +43,11 @@ use crate::chain::HeaderChain;
 use crate::store::Store;
 
 fn main() {
-    let listen_port: u16 = std::env::args()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
+    // P2P serve port — use ITC_P2P_PORT to avoid conflicting with interchainedd (17333).
+    // Recommended: ITC_P2P_PORT=17334 when running alongside interchainedd on same host.
+    let listen_port: u16 = std::env::var("ITC_P2P_PORT")
+        .ok().and_then(|s| s.parse().ok())
+        .or_else(|| std::env::args().nth(1).and_then(|s| s.parse().ok()))
         .unwrap_or(proto::DEFAULT_P2P_PORT);
     let datadir = std::env::var("ITC_NODE_DATADIR")
         .unwrap_or_else(|_| "./itc-node-data".to_string());
