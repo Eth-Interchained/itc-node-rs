@@ -155,3 +155,63 @@ mod tests {
         assert_eq!(script[1], 68);
     }
 }
+
+// ── Broadcast via L1 JSON-RPC ─────────────────────────────────────────────────
+
+/// Broadcast a signed raw transaction via the L1 `sendrawtransaction` JSON-RPC method.
+///
+/// `_anchor_endpoint` and `_magic` are kept for API compatibility with the P2P
+/// broadcast path — the current implementation uses the simpler JSON-RPC route.
+pub fn broadcast_tx(
+    _anchor_endpoint: &str,
+    _magic: [u8; 4],
+    raw_tx: &[u8],
+) -> Result<String, String> {
+    let rpc_url  = std::env::var("ITC_L1_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:9332".to_string());
+    let rpc_user = std::env::var("ITC_L1_RPC_USER").unwrap_or_default();
+    let rpc_pass = std::env::var("ITC_L1_RPC_PASS").unwrap_or_default();
+
+    let raw_hex = hex::encode(raw_tx);
+    let body = serde_json::json!({
+        "jsonrpc": "1.0",
+        "id": "anchor",
+        "method": "sendrawtransaction",
+        "params": [raw_hex],
+    })
+    .to_string();
+
+    let creds = base64_encode(format!("{rpc_user}:{rpc_pass}").as_bytes());
+    let response = ureq::post(&rpc_url)
+        .set("Authorization", &format!("Basic {creds}"))
+        .set("Content-Type", "application/json")
+        .send_string(&body)
+        .map_err(|e| format!("broadcast_tx RPC error: {e}"))?;
+
+    let json: serde_json::Value = response
+        .into_json()
+        .map_err(|e| format!("broadcast_tx JSON parse error: {e}"))?;
+
+    if let Some(err) = json.get("error").filter(|v| !v.is_null()) {
+        return Err(format!("broadcast_tx node error: {err}"));
+    }
+
+    json.get("result")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "broadcast_tx: missing txid in response".to_string())
+}
+
+fn base64_encode(input: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = if chunk.len() > 1 { chunk[1] as usize } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as usize } else { 0 };
+        out.push(CHARS[(b0 >> 2)] as char);
+        out.push(CHARS[((b0 & 3) << 4) | (b1 >> 4)] as char);
+        if chunk.len() > 1 { out.push(CHARS[((b1 & 0xf) << 2) | (b2 >> 6)] as char); } else { out.push('='); }
+        if chunk.len() > 2 { out.push(CHARS[b2 & 0x3f] as char); } else { out.push('='); }
+    }
+    out
+}

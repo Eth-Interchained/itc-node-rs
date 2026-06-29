@@ -9,6 +9,9 @@ description = "ITC-L2 L1 anchor — builds and broadcasts OP_RETURN sovereignty 
 [dependencies]
 itc-proto = { path = "../itc-proto" }
 
+# NEDB — reads the current Merkle head for the OP_RETURN payload
+nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", package = "nedb-engine" }
+
 # secp256k1 — P2PKH signing for the anchor transaction (Bitcoin-compatible)
 secp256k1 = { version = "0.27", features = ["rand-std"] }
 
@@ -17,7 +20,8 @@ sha2    = "0.10"
 ripemd  = "0.1"
 
 # bs58 — base58check encode/decode for WIF key parsing and P2PKH address encoding
-bs58    = "0.5"
+# "check" feature enables with_check() / with_check(None) API
+bs58    = { version = "0.5", features = ["check"] }
 
 hex     = "0.4"
 
@@ -26,6 +30,4 @@ serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # ureq — synchronous HTTP client for the JSON-RPC calls in rpc.rs.
-# "tls" feature enables HTTPS if the node is behind a TLS proxy.
-# No async runtime required — fits the existing thread-based architecture.
 ureq = { version = "2", features = ["tls"] }
