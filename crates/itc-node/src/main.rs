@@ -276,6 +276,46 @@ fn main() {
     }
 
 
+    // ── 4b. Live L1 follow — keeps syncing new blocks after initial sync ────────
+    {
+        use itc_oracle::{DepositOracle, OracleConfig};
+        use std::sync::atomic::AtomicBool;
+        let follow_db  = Arc::clone(&store.db);
+        let follow_ep  = endpoint.to_string();
+        let follow_osh = oracle_start_height;
+        std::thread::spawn(move || {
+            println!("itc-node[l1-follow]: live sync thread started (60s interval)");
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                let s = crate::store::Store::from_arc_db(Arc::clone(&follow_db));
+                let (cur_h, cur_hash) = s.get_tip().unwrap_or((0, [0u8; 32]));
+                let Ok((mut peer, _)) = crate::anchor::fetch_anchor_tip(&follow_ep, proto::MAGIC_MAIN)
+                else { continue };
+                let mut chain = crate::chain::HeaderChain::resume_from_tip(cur_h, cur_hash);
+                let flag = AtomicBool::new(false);
+                if sync::sync_headers(&mut peer, &mut chain, &s, &flag).is_err() { continue }
+                let new_h = chain.tip_height();
+                if new_h <= cur_h { continue }
+                let _ = sync::sync_blocks(&mut peer, &chain, &s, (cur_h + 1).max(follow_osh), &flag);
+                let mut oracle = DepositOracle::new(OracleConfig::from_env(), Arc::clone(&follow_db));
+                for h in (cur_h + 1)..=new_h {
+                    if let Some(hash) = chain.active_hash_at(h) {
+                        let hx = itc_proto::hashes::to_internal_hex(&hash);
+                        if let Some(raw) = s.get_block(&hx) {
+                            let minted = oracle.process_block(&raw, h);
+                            for d in &minted {
+                                eprintln!();
+                                println!("[ORACLE] live mint at L1 {} → 0x{}", h, hex::encode(d.aitc_address));
+                            }
+                        }
+                    }
+                }
+                let _ = s.put_tip(new_h, &chain.tip_hash());
+                println!("[L1] live: synced to height {new_h}");
+            }
+        });
+    }
+
     // ── 4. L1 anchor poster — sovereignty proof on ITC mainnet ───────────────
     // Spawns a background thread that fires every ITC_ANCHOR_INTERVAL epochs and
     // broadcasts an OP_RETURN tx to ITC L1 carrying the NEDB Merkle head.
