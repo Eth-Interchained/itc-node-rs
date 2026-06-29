@@ -1,0 +1,82 @@
+warning: unnecessary parentheses around index expression
+   --> crates/itc-anchor/src/tx.rs:214:24
+    |
+214 |         out.push(CHARS[(b0 >> 2)] as char);
+    |                        ^       ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+214 -         out.push(CHARS[(b0 >> 2)] as char);
+214 +         out.push(CHARS[b0 >> 2] as char);
+    |
+
+warning: unused import: `crate::types::parse_qty`
+  --> crates/itc-rpc/src/ecrecover.rs:18:5
+   |
+18 | use crate::types::parse_qty;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::io::Cursor`
+ --> crates/itc-rpc/src/server.rs:8:5
+  |
+8 | use std::io::Cursor;
+  |     ^^^^^^^^^^^^^^^
+
+warning: `itc-anchor` (lib) generated 1 warning (run `cargo fix --lib -p itc-anchor` to apply 1 suggestion)
+warning: `itc-rpc` (lib) generated 2 warnings (run `cargo fix --lib -p itc-rpc` to apply 2 suggestions)
+warning: methods `tip_work` and `contains` are never used
+  --> crates/itc-node/src/chain.rs:63:12
+   |
+37 | impl HeaderChain {
+   | ---------------- methods in this implementation
+...
+63 |     pub fn tip_work(&self) -> U256 {
+   |            ^^^^^^^^
+...
+69 |     pub fn contains(&self, hash: &[u8; 32]) -> bool {
+   |            ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `gas_limit` is never read
+  --> crates/itc-node/src/sequencer.rs:40:9
+   |
+32 | pub struct PendingTx {
+   |            --------- field in this struct
+...
+40 |     pub gas_limit: u64,
+   |         ^^^^^^^^^
+   |
+   = note: `PendingTx` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `block_number` is never read
+  --> crates/itc-node/src/sequencer.rs:48:9
+   |
+45 | pub struct TxReceipt {
+   |            --------- field in this struct
+...
+48 |     pub block_number: u64,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `TxReceipt` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: function `submit_tx` is never used
+  --> crates/itc-node/src/sequencer.rs:62:8
+   |
+62 | pub fn submit_tx(mempool: &Mempool, tx: PendingTx) {
+   |        ^^^^^^^^^
+
+warning: method `put_header` is never used
+  --> crates/itc-node/src/store.rs:53:12
+   |
+36 | impl Store {
+   | ---------- method in this implementation
+...
+53 |     pub fn put_header(&self, header: &BlockHeader, height: i32) -> io::Result<()> {
+   |            ^^^^^^^^^^
+
+warning: `itc-node` (bin "itc-node") generated 5 warnings
+    Finished `release` profile [optimized] target(s) in 0.35s

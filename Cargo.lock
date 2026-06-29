@@ -1046,6 +1046,8 @@ dependencies = [
  "itc-proto",
  "itc-rpc",
  "nedb-engine",
+ "revm",
+ "rlp",
  "serde_json",
 ]
 
@@ -1059,6 +1061,7 @@ dependencies = [
  "itc-evm",
  "itc-proto",
  "nedb-engine",
+ "revm",
  "serde_json",
 ]
 
@@ -1082,6 +1085,7 @@ dependencies = [
  "itc-proto",
  "k256",
  "nedb-engine",
+ "revm",
  "rlp",
  "serde",
  "serde_json",
