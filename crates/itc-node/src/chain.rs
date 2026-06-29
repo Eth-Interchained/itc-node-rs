@@ -60,12 +60,14 @@ impl HeaderChain {
     pub fn tip_hash(&self) -> [u8; 32] {
         self.tip_hash
     }
+    #[allow(dead_code)]
     pub fn tip_work(&self) -> U256 {
         self.tip_work
     }
     pub fn mismatch(&self) -> bool {
         self.mismatch
     }
+    #[allow(dead_code)]
     pub fn contains(&self, hash: &[u8; 32]) -> bool {
         self.height.contains_key(hash)
     }

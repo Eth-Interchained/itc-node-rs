@@ -50,6 +50,7 @@ impl Store {
     }
 
     /// Persist a single header, linked causally to its parent.
+    #[allow(dead_code)]
     pub fn put_header(&self, header: &BlockHeader, height: i32) -> io::Result<()> {
         let id = to_internal_hex(&header.block_hash());
         let parent = to_internal_hex(&header.prev_blockhash);

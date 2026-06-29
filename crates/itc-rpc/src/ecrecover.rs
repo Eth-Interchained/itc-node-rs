@@ -15,7 +15,6 @@
 use k256::ecdsa::{RecoveryId, Signature, VerifyingKey};
 use sha3::{Digest, Keccak256};
 
-use crate::types::parse_qty;
 
 /// Recover the Ethereum sender address from a raw EIP-155 (legacy) transaction.
 ///
