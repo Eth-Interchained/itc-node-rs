@@ -36,8 +36,9 @@ pub fn dispatch(method: &str, params: &Value, id: Value, evm: &SharedEvm, epoch:
             RpcResponse::ok(id, json!(hex_qty(epoch)))
         }
         "eth_gasPrice" => {
-            // 1 gwei — low enough to be cheap, non-zero so wallets handle gas correctly
-            RpcResponse::ok(id, json!("0x3B9ACA00"))
+            // Zero gas price — no miner/validator earns fees on ITC-L2 v1.
+            // Revenue model: 5% bridge fee on L1. L2 txs are free.
+            RpcResponse::ok(id, json!("0x0"))
         }
 
         // ── Account state ────────────────────────────────────────────────────
