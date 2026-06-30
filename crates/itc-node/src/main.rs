@@ -144,22 +144,20 @@ fn main() {
         ctrlc::set_handler(move || {
             if !flag.swap(true, Ordering::SeqCst) {
                 eprintln!("\nitc-node: shutdown signal received — flushing...");
-                // Read tip from live_tip (updated every 2k blocks) or from NEDB directly
-                let (h, hash) = {
-                    let lt = *tip_ref.lock().unwrap();
-                    if lt.0 > 0 { lt } else {
-                        // Fallback: read current tip straight from NEDB
-                        let s = crate::store::Store::from_arc_db(Arc::clone(&flush_db));
-                        s.get_tip().unwrap_or((0, [0u8; 32]))
-                    }
-                };
+                // ONLY use live_tip — NEVER fall back to NEDB get_tip().
+                // NEDB has an async indexer: get() can return stale data from a previous
+                // session even after put() was called in this session. Falling back to
+                // NEDB read would overwrite a correct tip with an old one → resume from
+                // wrong height on next boot. live_tip is always in-memory and current.
+                let (h, hash) = *tip_ref.lock().unwrap();
                 if h > 0 {
-                    // Re-write to NEDB to confirm fsync
                     let s = crate::store::Store::from_arc_db(Arc::clone(&flush_db));
                     let _ = s.put_tip(h, &hash);
                     eprintln!("itc-node: tip flushed at height {h} — safe to restart");
                 } else {
-                    eprintln!("itc-node: no tip to flush (sync not yet started)");
+                    // live_tip not yet populated (killed before first 2k-header batch)
+                    // Don't touch NEDB — existing tip from last session is correct.
+                    eprintln!("itc-node: no new tip to flush (killed before first batch)");
                 }
                 // Give NEDB time to fsync
                 std::thread::sleep(std::time::Duration::from_millis(500));
