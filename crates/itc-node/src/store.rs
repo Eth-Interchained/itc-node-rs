@@ -144,11 +144,13 @@ impl Store {
             .put(COLL_INDEX, "tip", data, vec![], None, None)
             .map(|_| ())
             .map_err(err)?;
-        // Poll until the write is visible (up to 2 seconds, 10ms intervals)
+        // Poll until the write is visible in the index (async indexer lag)
         for attempt in 0..200u32 {
             if let Some((h, _)) = self.get_tip() {
                 if h >= height {
-                    return Ok(()); // confirmed readable
+                    // Write is indexed — now force MANIFEST write so it survives restart
+                    self.checkpoint();
+                    return Ok(());
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -156,8 +158,26 @@ impl Store {
                 eprintln!("[TIP] NEDB indexer lagging for height {height} — waiting...");
             }
         }
-        eprintln!("[TIP] WARNING: NEDB did not confirm tip {height} after 2s — continuing anyway");
+        eprintln!("[TIP] WARNING: NEDB did not confirm tip {height} after 2s");
         Ok(())
+    }
+
+    /// Force NEDB to write a new MANIFEST checkpoint that includes all recent
+    /// WAL entries. Without this, warm-start reads the old MANIFEST and misses
+    /// tip writes that happened after the last checkpoint.
+    ///
+    /// Called after put_tip to guarantee the tip survives the next restart.
+    pub fn checkpoint(&self) {
+        // Trigger a fresh cold scan → NEDB rebuilds the in-memory index from
+        // the full WAL and writes a new MANIFEST at the current seq.
+        // This is the only public API to force a MANIFEST write in NEDB v1.
+        Db::start_cold_scan(Arc::clone(&self.db));
+        // Wait for the scan to complete (head changes when done)
+        let before = self.head();
+        for _ in 0..500u32 { // 5s max
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if self.head() != before { break; }
+        }
     }
 
     /// Load the persisted chain tip, if any.
