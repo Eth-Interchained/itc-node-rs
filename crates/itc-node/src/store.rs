@@ -21,7 +21,7 @@ use itc_proto::hashes::to_internal_hex;
 
 const COLL_HEADERS: &str = "headers";
 const COLL_BLOCKS: &str = "blocks";
-const COLL_INDEX: &str = "index";
+const COLL_INDEX: &str = "chain_tip"; // "index" is reserved by NEDB internally
 
 type PutOp = (String, String, serde_json::Value, Vec<String>, Option<String>, Option<String>);
 
