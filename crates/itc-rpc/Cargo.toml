@@ -10,7 +10,7 @@ description = "ITC-L2 eth_* JSON-RPC server — MetaMask-compatible Ethereum JSO
 itc-evm    = { path = "../itc-evm" }
 revm       = { version = "3", default-features = false, features = ["std"] }
 itc-proto  = { path = "../itc-proto" }
-nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", package = "nedb-engine" }
+nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", tag = "v2.5.2", package = "nedb-engine" }
 
 tiny_http  = "0.12"
 serde      = { version = "1", features = ["derive"] }
