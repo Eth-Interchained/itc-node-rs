@@ -200,11 +200,11 @@ pub fn dispatch(method: &str, params: &Value, id: Value, evm: &SharedEvm, epoch:
 // ── EVM state accessors ───────────────────────────────────────────────────────
 
 fn evm_balance(evm: &ItcEvm, addr: Address) -> U256 {
+    // evm.cache.db = NedbState (implements DatabaseRef with basic())
+    // Calling basic() on NedbState reads fresh from NEDB, bypassing CacheDB in-memory cache.
+    // revm 3.x: DatabaseRef trait method is basic(), not basic_ref().
     use revm::db::DatabaseRef;
-    // Read directly from NEDB (NedbState), bypassing the CacheDB in-memory cache.
-    // The CacheDB cache is populated at tx start and NOT updated after commit_changes
-    // writes to NEDB — so balance/nonce reads through .basic() return stale values.
-    evm.cache.db.db.basic_ref(addr)
+    evm.cache.db.basic(addr)
         .ok()
         .flatten()
         .map(|info| info.balance)
@@ -213,8 +213,7 @@ fn evm_balance(evm: &ItcEvm, addr: Address) -> U256 {
 
 fn evm_nonce(evm: &ItcEvm, addr: Address) -> u64 {
     use revm::db::DatabaseRef;
-    // Same — bypass CacheDB, read nonce fresh from NEDB after each block.
-    evm.cache.db.db.basic_ref(addr)
+    evm.cache.db.basic(addr)
         .ok()
         .flatten()
         .map(|info| info.nonce)
