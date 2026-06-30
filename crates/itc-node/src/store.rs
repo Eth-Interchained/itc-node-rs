@@ -135,52 +135,17 @@ impl Store {
 
     /// Persist the chain tip (height + hash).
     ///
-    /// Polls until NEDB's indexer confirms the write is readable.
-    /// NEDB has an async indexer — `put()` appends to the WAL immediately but
-    /// `get()` reads from the index, which may lag by a few milliseconds.
-    /// Blocking here ensures the tip is durable and readable before returning,
-    /// so the next boot's `get_tip()` sees the correct height.
-    /// Tip lives in headers/"__tip__" — same collection as blocks, same persistence.
+    /// Writes to headers/"__tip__" then calls flush_manifest() (nedb-engine v2.5.2+)
+    /// to atomically snapshot the MANIFEST. One fsync — tip survives warm restart
+    /// without any cold scan.
     pub fn put_tip(&self, height: i32, hash: &[u8; 32]) -> io::Result<()> {
         let data = json!({ "height": height, "hash": to_internal_hex(hash) });
         self.db
             .put(COLL_HEADERS, "__tip__", data, vec![], None, None)
             .map(|_| ())
             .map_err(err)?;
-        // Poll until the write is visible in the index (async indexer lag)
-        for attempt in 0..200u32 {
-            if let Some((h, _)) = self.get_tip() {
-                if h >= height {
-                    // Write is indexed — now force MANIFEST write so it survives restart
-                    self.checkpoint();
-                    return Ok(());
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            if attempt == 50 {
-                eprintln!("[TIP] NEDB indexer lagging for height {height} — waiting...");
-            }
-        }
-        eprintln!("[TIP] WARNING: NEDB did not confirm tip {height} after 2s");
+        self.db.flush_manifest();
         Ok(())
-    }
-
-    /// Force NEDB to write a new MANIFEST checkpoint that includes all recent
-    /// WAL entries. Without this, warm-start reads the old MANIFEST and misses
-    /// tip writes that happened after the last checkpoint.
-    ///
-    /// Called after put_tip to guarantee the tip survives the next restart.
-    pub fn checkpoint(&self) {
-        // Trigger a fresh cold scan → NEDB rebuilds the in-memory index from
-        // the full WAL and writes a new MANIFEST at the current seq.
-        // This is the only public API to force a MANIFEST write in NEDB v1.
-        Db::start_cold_scan(Arc::clone(&self.db));
-        // Wait for the scan to complete (head changes when done)
-        let before = self.head();
-        for _ in 0..500u32 { // 5s max
-            std::thread::sleep(std::time::Duration::from_millis(10));
-            if self.head() != before { break; }
-        }
     }
 
     /// Load the persisted chain tip, if any.
