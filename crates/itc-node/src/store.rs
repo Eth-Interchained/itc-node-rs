@@ -21,7 +21,7 @@ use itc_proto::hashes::to_internal_hex;
 
 const COLL_HEADERS: &str = "headers";
 const COLL_BLOCKS: &str = "blocks";
-const COLL_INDEX: &str = "index";
+const COLL_INDEX: &str = "chain_tip"; // "index" is reserved by NEDB internally
 
 type PutOp = (String, String, serde_json::Value, Vec<String>, Option<String>, Option<String>);
 
@@ -41,13 +41,27 @@ impl Store {
     }
 
     /// Open (or create) the NEDB-backed store at `path`.
+    ///
+    /// On cold start (no MANIFEST on disk), NEDB rebuilds the index from the WAL
+    /// in a background thread. `head()` returns empty until the scan completes.
+    /// We wait here so that `get_tip()` and other reads see the full indexed state.
     pub fn open(path: &str) -> io::Result<Store> {
         let db = Db::open(Path::new(path), None).map_err(err)?;
         let db = Arc::new(db);
-        // Warm start is already ready; a cold start (no MANIFEST) rebuilds the
-        // index in a background thread. Idempotent and safe either way.
         Db::start_cold_scan(Arc::clone(&db));
-        Ok(Store { db })
+        // Wait for the cold scan to complete (indicated by a non-empty head).
+        // On warm start the head is immediately available; on cold start we wait.
+        // Timeout: 300s (5 minutes) for very large databases.
+        let store = Store { db };
+        if store.head().is_empty() {
+            println!("itc-node[store]: cold start — waiting for NEDB scan to complete...");
+            for _ in 0..30_000u32 { // 300s at 10ms intervals
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                if !store.head().is_empty() { break; }
+            }
+            println!("itc-node[store]: NEDB scan complete (head={})", &store.head()[..16.min(store.head().len())]);
+        }
+        Ok(store)
     }
 
     /// The engine's tamper-evident Merkle head (for logging / proofs).
