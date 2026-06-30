@@ -159,12 +159,14 @@ fn main() {
                     // Don't touch NEDB — existing tip from last session is correct.
                     eprintln!("itc-node: no new tip to flush (killed before first batch)");
                 }
-                // Give NEDB time to fsync
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Return from the handler — Ctrl+C interrupted the serve loop's accept()
+                // syscall (EINTR), which causes serve() to return an error. The serve error
+                // handler checks the shutdown flag and exits main() naturally, letting Rust
+                // drop all values including NEDB (which flushes its WAL on Drop).
                 eprintln!("itc-node: bye.");
-                std::process::exit(0);
             } else {
-                std::process::exit(1); // second Ctrl-C: immediate
+                eprintln!("itc-node: force quit.");
+                std::process::exit(1); // second Ctrl-C: immediate hard exit
             }
         }).expect("Failed to set Ctrl-C handler");
     }
@@ -372,7 +374,13 @@ fn main() {
     let store = Arc::new(store);
     let listen = format!("0.0.0.0:{listen_port}");
     if let Err(e) = serve::serve(&listen, proto::MAGIC_MAIN, chain, store, our_height) {
-        eprintln!("itc-node: serve error on {listen}: {e}");
-        std::process::exit(1);
+        if shutdown.load(Ordering::Relaxed) {
+            // Serve loop exited because Ctrl+C interrupted accept() — clean shutdown.
+            // All Rust values drop here: NEDB Db drops → WAL flushed to disk.
+            println!("itc-node: clean shutdown complete.");
+        } else {
+            eprintln!("itc-node: serve error on {listen}: {e}");
+        }
     }
+    // main() returns naturally → all Arcs drop → NEDB flushes
 }
