@@ -197,7 +197,15 @@ fn main() {
             "itc-node: resumed from store — tip height {tip_h} hash {}",
             proto::hashes::to_display_hex(&tip_hash),
         );
-        HeaderChain::resume_from_tip(tip_h, tip_hash)
+        let mut c = HeaderChain::resume_from_tip(tip_h, tip_hash);
+        // resume_from_tip only knows the tip + genesis; every height in between
+        // is a zero placeholder until hydrated. Block-body sync (which can start
+        // from well below the tip via ITC_ORACLE_START_HEIGHT) needs the REAL
+        // hash at every height it downloads — without this, it asks peers for
+        // the block whose hash is "000...000", which none of them can ever have.
+        // See HeaderChain::hydrate_from_store for the full story.
+        c.hydrate_from_store(&store);
+        c
     } else {
         println!("itc-node: no persisted tip — syncing from genesis");
         HeaderChain::new()
