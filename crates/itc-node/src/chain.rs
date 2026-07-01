@@ -3,10 +3,15 @@
 //! Proof-of-Prefix mismatch detection (via `itc_proto::seam::is_mismatch`).
 
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::time::Instant;
 
 use itc_proto::block::BlockHeader;
+use itc_proto::hashes::to_internal_hex;
 use itc_proto::seam;
 use itc_proto::work::{work_from_bits, U256};
+
+use crate::store::Store;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnectOutcome {
@@ -85,6 +90,108 @@ impl HeaderChain {
             tip_hash: hash,
             tip_work: U256::ZERO, // unknown — only used for fork detection, safe to zero
             mismatch: false,
+        }
+    }
+
+    /// Fully hydrate `active`/`height`/`headers` from the durable store by
+    /// walking backward from the resumed tip through `prev_blockhash`, down to
+    /// genesis. Call this once, right after `resume_from_tip`, before starting
+    /// any sync.
+    ///
+    /// `resume_from_tip` only knows the tip and genesis — every height in
+    /// between is left as a `[0u8; 32]` placeholder ("Ancestor slots are zero
+    /// (unknown)", by design, so header-sync's locator can start instantly).
+    /// That is fine for HEADER sync — the locator only ever needs the tip hash.
+    /// It is NOT fine for `active_range`/`active_hash_at`: after a warm resume
+    /// with a real sync gap (e.g. block bodies never fully downloaded before a
+    /// restart), they return the zero placeholder for every un-hydrated
+    /// height — and `sync_blocks` then asks a peer for the block whose hash is
+    /// "000...000", which no peer can ever have. That is the exact, previously
+    /// invisible cause behind block-body sync silently requesting garbage and
+    /// getting empty/short responses back after a warm resume. Fork detection
+    /// (`ancestor_hash_at`) and locator-serving (`headers_after_locator`) have
+    /// the same latent gap for old heights, via `headers`/`height`.
+    ///
+    /// Every header ever connected is durably persisted in the store keyed by
+    /// its own hash, carrying its `prev_blockhash` — so the full historical
+    /// chain can be reconstructed locally, from disk, without touching the
+    /// network. Live progress is shown because this walks up to `tip_height()`
+    /// individual store reads, which — while much cheaper than a filesystem
+    /// object scan — is still real, visible work at hundreds of thousands of
+    /// headers, and a silent multi-second pause at boot is exactly the kind of
+    /// thing this session has spent its effort making honest instead of quiet.
+    pub fn hydrate_from_store(&mut self, store: &Store) {
+        let tip_h = self.tip_height();
+        if tip_h <= 0 {
+            return;
+        }
+
+        const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let cyan = "\x1b[36m";
+        let bcyan = "\x1b[1;36m";
+        let dim = "\x1b[2m";
+        let bold = "\x1b[1m";
+        let reset = "\x1b[0m";
+        let start = Instant::now();
+        let mut last_sample_t = start;
+        let mut last_sample_n = 0u64;
+        let mut rate = 0.0f64;
+        let mut frame = 0usize;
+
+        eprintln!("{cyan}  ◈ hydrating chain history from local store (resumed tip -> genesis, one-time){reset}");
+
+        let mut hash = self.tip_hash;
+        let mut h = tip_h;
+        let mut hydrated = 0u64;
+        let mut gap_at: Option<i32> = None;
+
+        while h > 0 {
+            let id = to_internal_hex(&hash);
+            let Some((hdr, height)) = store.get_header(&id) else {
+                gap_at = Some(h);
+                break; // gap in persisted data — stop, use what we have
+            };
+            let parent = hdr.prev_blockhash;
+            self.active[h as usize] = hash;
+            self.height.insert(hash, height);
+            self.headers.insert(hash, hdr);
+            hydrated += 1;
+
+            let now = Instant::now();
+            if now.duration_since(last_sample_t).as_millis() >= 200 {
+                let dt = now.duration_since(last_sample_t).as_secs_f64();
+                let dn = hydrated.saturating_sub(last_sample_n) as f64;
+                if dt > 0.0 {
+                    rate = dn / dt;
+                }
+                last_sample_t = now;
+                last_sample_n = hydrated;
+                let pct = (hydrated as f64 / tip_h as f64 * 100.0) as u32;
+                let filled = ((pct as usize) * 20 / 100).min(20);
+                let bar = "█".repeat(filled) + &"░".repeat(20 - filled);
+                let elapsed = now.duration_since(start).as_secs_f64();
+                eprint!(
+                    "\r  {cyan}{spin}{reset} [hydrate] {bcyan}[{bar}]{reset} {bold}{pct:>3}%{reset}  \
+                     {hydrated:>7}/{tip_h}  {dim}({rate:>6.0}/s · {elapsed:>4.0}s elapsed){reset}   ",
+                    spin = SPINNER[frame % SPINNER.len()],
+                );
+                let _ = std::io::stderr().flush();
+                frame += 1;
+            }
+
+            hash = parent;
+            h -= 1;
+        }
+        eprintln!(
+            "\r  {bold}✓{reset} hydrated {hydrated}/{tip_h} historical header(s) from store in {:.1}s{}",
+            start.elapsed().as_secs_f64(),
+            " ".repeat(30),
+        );
+        if let Some(gap_h) = gap_at {
+            eprintln!(
+                "itc-node[chain]: WARNING — local header history has a gap at/above height {gap_h}; \
+                 heights below it are NOT resolvable from the active chain until re-synced from a peer."
+            );
         }
     }
 

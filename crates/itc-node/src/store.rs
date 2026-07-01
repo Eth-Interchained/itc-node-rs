@@ -115,8 +115,9 @@ impl Store {
         self.db.put_batch(ops).map(|_| ()).map_err(err)
     }
 
-    /// Load a header (and its height) by block-hash hex id.
-    #[allow(dead_code)]
+    /// Load a header (and its height) by block-hash hex id. Used to hydrate the
+    /// in-memory chain's full active-height history after a warm resume — see
+    /// `HeaderChain::hydrate_from_store`.
     pub fn get_header(&self, id: &str) -> Option<(BlockHeader, i32)> {
         let node = self.db.get(COLL_HEADERS, id)?;
         let hdr_hex = node.data.get("hdr")?.as_str()?;
