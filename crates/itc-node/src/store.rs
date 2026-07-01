@@ -1,12 +1,24 @@
 //! Real storage backend over nedb-engine — the v2 content-addressed DAG engine,
-//! already Rust, used directly (no FFI). Persists headers, blocks, and the chain
-//! index into NEDB collections so the node resumes instantly on the next boot.
+//! already Rust, used directly (no FFI). Persists headers, blocks, and L2 receipts
+//! into NEDB collections so the node resumes instantly on the next boot.
 //!
 //! - `headers` collection: id = block-hash hex, data = {hdr: <80-byte hex>, height},
 //!   `caused_by = [parent hash]` — the header is a DAG node caused by its parent.
-//! - `blocks`  collection: id = block-hash hex, data = {raw: <block hex>} (ready
-//!   for the block-download slice; persisted the same way).
-//! - `index`   collection: id = "tip", data = {height, hash} — the persisted tip.
+//! - `blocks`  collection: id = block-hash hex, data = {raw: <block hex>}.
+//!
+//! Boot resume (v2.5.44+): the chain tip is NOT a synthetic marker document — it is
+//! read directly from the engine's own durable per-collection tip,
+//! `db.tip_collection("headers")`. That primitive is kept current on every write and
+//! survives a warm restart with no scan (persisted in MANIFEST) — see
+//! <https://github.com/Eth-Interchained/nedb/blob/master/docs/REPLICATION.md>.
+//! Because a header document's id IS `to_internal_hex(header.block_hash())`, the tip
+//! hash is the node's id directly; no header bytes need decoding to resume.
+//!
+//! Durability: `flush()` wraps the engine's `flush_all()` (WAL + segment sync +
+//! MANIFEST, including the tip). Callers checkpoint on their own cadence — this
+//! module is a persistence primitive, not a policy: it does not decide *when* to
+//! flush, only *how*. See `sync::sync_headers`/`sync_blocks` (L1, every ~2000) and
+//! `sequencer::produce_block` (L2, every 500), plus the exit handler in `main.rs`.
 
 use std::io;
 use std::path::Path;
@@ -19,11 +31,8 @@ use itc_proto::block::BlockHeader;
 use itc_proto::consensus::Reader;
 use itc_proto::hashes::to_internal_hex;
 
-const COLL_HEADERS: &str = "headers";
+pub const COLL_HEADERS: &str = "headers";
 const COLL_BLOCKS: &str = "blocks";
-// COLL_INDEX kept for reference but tip now lives in COLL_HEADERS as "__tip__"
-#[allow(dead_code)]
-const COLL_INDEX: &str = "chain_tip";
 
 type PutOp = (String, String, serde_json::Value, Vec<String>, Option<String>, Option<String>);
 
@@ -37,7 +46,6 @@ fn err<E: std::fmt::Display>(e: E) -> io::Error {
 
 impl Store {
     /// Wrap an already-open NEDB instance (e.g. for background threads).
-    #[allow(dead_code)]
     pub fn from_arc_db(db: Arc<Db>) -> Store {
         Store { db }
     }
@@ -46,7 +54,7 @@ impl Store {
     ///
     /// On cold start (no MANIFEST on disk), NEDB rebuilds the index from the WAL
     /// in a background thread. `head()` returns empty until the scan completes.
-    /// We wait here so that `get_tip()` and other reads see the full indexed state.
+    /// We wait here so that `tip_header()` and other reads see the full indexed state.
     pub fn open(path: &str) -> io::Result<Store> {
         let db = Db::open(Path::new(path), None).map_err(err)?;
         let db = Arc::new(db);
@@ -69,6 +77,12 @@ impl Store {
     /// The engine's tamper-evident Merkle head (for logging / proofs).
     pub fn head(&self) -> String {
         self.db.head()
+    }
+
+    /// Make buffered writes durable now (id-index WAL + segment sync + MANIFEST,
+    /// including the tip). Callers decide the cadence — see module docs.
+    pub fn flush(&self) {
+        self.db.flush_all();
     }
 
     /// Persist a single header, linked causally to its parent.
@@ -112,8 +126,7 @@ impl Store {
         Some((header, height))
     }
 
-    /// Persist a full block body (raw consensus bytes). Used by the block-download
-    /// slice; the storage path is real and ready now.
+    /// Persist a full block body (raw consensus bytes).
     pub fn put_block(&self, block_hash_hex: &str, raw: &[u8]) -> io::Result<()> {
         let data = json!({ "raw": hex_encode(raw) });
         self.db
@@ -133,62 +146,24 @@ impl Store {
         self.db.get(COLL_BLOCKS, id).is_some()
     }
 
-    /// Persist the chain tip (height + hash).
+    /// The chain tip — (height, block hash) of the most recently connected header —
+    /// or `None` if nothing has been synced yet. The durable boot-resume primitive:
+    /// backed by `db.tip_collection("headers")`, which is kept current on every
+    /// header write and survives a warm restart with no scan (see module docs).
     ///
-    /// Writes to headers/"__tip__" then calls flush_manifest() (nedb-engine v2.5.2+)
-    /// to atomically snapshot the MANIFEST. One fsync — tip survives warm restart
-    /// without any cold scan.
-    pub fn put_tip(&self, height: i32, hash: &[u8; 32]) -> io::Result<()> {
-        let data = json!({ "height": height, "hash": to_internal_hex(hash) });
-        self.db
-            .put(COLL_HEADERS, "__tip__", data, vec![], None, None)
-            .map(|_| ())
-            .map_err(err)?;
-        self.db.flush_manifest();
-        Ok(())
-    }
-
-    /// Load the persisted chain tip, if any.
-    pub fn get_tip(&self) -> Option<(i32, [u8; 32])> {
-        let node = self.db.get(COLL_HEADERS, "__tip__")?;
+    /// No header bytes need decoding: a header document's id IS
+    /// `to_internal_hex(header.block_hash())`, so the tip hash is the node's id
+    /// directly. `height` is read straight from the stored `{hdr, height}` payload.
+    pub fn tip_header(&self) -> Option<(i32, [u8; 32])> {
+        let node = self.db.tip_collection(COLL_HEADERS)?;
         let height = node.data.get("height")?.as_i64()? as i32;
-        let bytes = hex_decode(node.data.get("hash")?.as_str()?)?;
+        let bytes = hex_decode(&node.id)?;
         if bytes.len() != 32 {
             return None;
         }
-        let mut h = [0u8; 32];
-        h.copy_from_slice(&bytes);
-        Some((height, h))
-    }
-
-    /// Walk from the persisted tip back to genesis, returning headers in chain
-    /// order (height 1 .. tip). Empty if nothing is persisted yet.
-    #[allow(dead_code)]
-    pub fn load_headers_to_tip(&self) -> Vec<BlockHeader> {
-        let genesis = itc_proto::genesis_hash_internal();
-        let mut out = Vec::new();
-        let (_, tip) = match self.get_tip() {
-            Some(t) => t,
-            None => return out,
-        };
-        let mut cur = tip;
-        let mut guard = 0u64;
-        while cur != genesis {
-            guard += 1;
-            if guard > 10_000_000 {
-                break;
-            }
-            match self.get_header(&to_internal_hex(&cur)) {
-                Some((hdr, _h)) => {
-                    let prev = hdr.prev_blockhash;
-                    out.push(hdr);
-                    cur = prev;
-                }
-                None => break, // gap in persisted data — stop, use what we have
-            }
-        }
-        out.reverse(); // genesis-first
-        out
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes);
+        Some((height, hash))
     }
 }
 

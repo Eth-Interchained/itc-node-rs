@@ -1,18 +1,39 @@
 //! itc-node — ITC-L2 full peer node (Proof of Sovereignty).
 //!
-//! Slice 7: L1 anchor OP_RETURN poster. After syncing, a background thread fires
-//! every ITC_ANCHOR_INTERVAL epochs and broadcasts an OP_RETURN tx to ITC L1
-//! carrying the NEDB Merkle head — the sovereignty proof that the L2 state is
-//! anchored on-chain. Dry-run if ITC_ANCHOR_WIF is not set.
+//! An anchor-trust relay: it trusts the anchor's chain (Proof-of-Prefix, see
+//! `itc_proto::seam`) rather than re-deriving consensus — `work_from_bits` is used
+//! only for relative fork comparison, feeding the mismatch detector, not PoW
+//! validation. On top of the trusted L1 view it runs an L2 PoA sidechain (EVM +
+//! sequencer) bridged by a deposit/exit oracle, and anchors its own state back to
+//! L1 via an OP_RETURN poster — the sovereignty proof that the L2 state is
+//! provably tied to the chain it trusts.
 //!
-//! Slice 5: full block body download + peer citizenship. The node now:
-//!   - Resumes persisted headers + block bodies from NEDB on boot (instant start)
-//!   - Syncs all headers from the anchor
-//!   - Downloads full block bodies (getdata → block) and stores them in NEDB
-//!   - Serves headers AND full blocks to inbound peers (getdata, getheaders)
-//!   - Handles inv from peers — fetches blocks we don't have (stays current)
+//! What it does, end to end:
+//!   - Resumes headers + block bodies + L2 state from NEDB on boot (instant start,
+//!     no replay — see "Boot & durability" below)
+//!   - Syncs all headers from the anchor, downloads full block bodies, and serves
+//!     both to inbound peers (a first-class peer, not just a light client)
+//!   - Scans confirmed L1 blocks for bridge deposits and mints on L2
+//!   - Runs the L2 sequencer (EVM execution, `eth_*` JSON-RPC, exit scanning)
+//!   - Posts the NEDB Merkle head back to L1 periodically (sovereignty anchor)
 //!
-//! The node is a first-class citizen of the ITC network.
+//! ## Boot & durability
+//!
+//! Resume is O(1): `store.tip_header()` reads the chain tip directly from the
+//! engine's own durable per-collection tip (`nedb_engine::Db::tip_collection`,
+//! nedb-engine v2.5.44+) — no synthetic marker document, no full header replay.
+//! That primitive is kept current on every header write and survives a warm
+//! restart with no scan, so "resume from tip" and "the tip that's actually
+//! durable" are the same read, by construction — not two things kept in sync by
+//! hand.
+//!
+//! Flushing is NOT per-put — it is checkpointed on natural batch/block-count
+//! boundaries so buffered writes never drift far from disk without adding I/O to
+//! the hot path: `sync_headers` every round (`getheaders` returns up to 2000),
+//! `sync_blocks` every ~2000 downloaded bodies, the L2 sequencer every 500
+//! produced blocks. All three share one `Arc<Db>`, so any one checkpoint flushes
+//! L1 header/block progress and L2 receipts together. On `Ctrl-C`/`SIGTERM`, the
+//! handler installed below flushes immediately and unconditionally.
 //!
 //! Usage: `itc-node [LISTEN_PORT]`
 //! Env:   ITC_NODE_DATADIR (default: ./itc-node-data)
@@ -133,37 +154,32 @@ fn main() {
     }
 
     // ── Graceful shutdown: Ctrl-C / SIGTERM → guaranteed flush then exit ────
+    //
+    // The `ctrlc` crate already owns SIGINT/SIGTERM for this process, so the fix
+    // here is NOT `nedb_engine::Db::install_exit_flush` (a second signal handler
+    // for the same signals would race this one — exactly the anti-pattern that
+    // would be wrong to introduce). The fix is making THIS handler flush for real.
+    //
+    // Previously this called `put_tip()` — a hand-rolled marker doc + a
+    // MANIFEST-only flush that never touched the id-index WAL, which is why a
+    // Ctrl+C mid-sync could "flush" and still resume from genesis on restart.
+    // `flush_all()` is the engine's real durability primitive (WAL + segment sync
+    // + MANIFEST, including the tip); `tip_header()` (used to resume — below)
+    // reads the real last-connected header directly, so no manually-tracked
+    // shadow copy of "the current tip" needs to live in this process anymore.
     let shutdown = Arc::new(AtomicBool::new(false));
-    // live_tip is updated after every put_tip so the handler flushes the real value.
-    let live_tip: Arc<std::sync::Mutex<(i32, [u8; 32])>> =
-        Arc::new(std::sync::Mutex::new((0, [0u8; 32])));
     {
         let flag     = Arc::clone(&shutdown);
-        let tip_ref  = Arc::clone(&live_tip);
         let flush_db = Arc::clone(&store.db);
         ctrlc::set_handler(move || {
             if !flag.swap(true, Ordering::SeqCst) {
                 eprintln!("\nitc-node: shutdown signal received — flushing...");
-                // ONLY use live_tip — NEVER fall back to NEDB get_tip().
-                // NEDB has an async indexer: get() can return stale data from a previous
-                // session even after put() was called in this session. Falling back to
-                // NEDB read would overwrite a correct tip with an old one → resume from
-                // wrong height on next boot. live_tip is always in-memory and current.
-                let (h, hash) = *tip_ref.lock().unwrap();
-                if h > 0 {
-                    let s = crate::store::Store::from_arc_db(Arc::clone(&flush_db));
-                    let _ = s.put_tip(h, &hash);
-                    eprintln!("itc-node: tip flushed at height {h} — safe to restart");
-                } else {
-                    // live_tip not yet populated (killed before first 2k-header batch)
-                    // Don't touch NEDB — existing tip from last session is correct.
-                    eprintln!("itc-node: no new tip to flush (killed before first batch)");
-                }
+                flush_db.flush_all();
+                eprintln!("itc-node: flushed — safe to restart. bye.");
                 // Return from the handler — Ctrl+C interrupted the serve loop's accept()
                 // syscall (EINTR), which causes serve() to return an error. The serve error
                 // handler checks the shutdown flag and exits main() naturally, letting Rust
                 // drop all values including NEDB (which flushes its WAL on Drop).
-                eprintln!("itc-node: bye.");
             } else {
                 eprintln!("itc-node: force quit.");
                 std::process::exit(1); // second Ctrl-C: immediate hard exit
@@ -171,10 +187,12 @@ fn main() {
         }).expect("Failed to set Ctrl-C handler");
     }
 
-    // Resume from persisted tip — O(1) vs O(648k) header replay.
+    // Resume from persisted tip — O(1) vs O(648k) header replay. Backed by
+    // nedb_engine::Db::tip_collection("headers"), durable across a warm restart
+    // with no scan (nedb-engine v2.5.44+) — not a hand-rolled marker document.
     // The block locator sends the tip hash first; if the peer recognises it the
     // sync finishes in a single round-trip.  Falls back to genesis on reorg.
-    let mut chain = if let Some((tip_h, tip_hash)) = store.get_tip() {
+    let mut chain = if let Some((tip_h, tip_hash)) = store.tip_header() {
         println!(
             "itc-node: resumed from store — tip height {tip_h} hash {}",
             proto::hashes::to_display_hex(&tip_hash),
@@ -206,7 +224,7 @@ fn main() {
         chain.tip_height(),
         anchor_tip.height
     );
-    if let Err(e) = sync::sync_headers(&mut peer, &mut chain, &store, &shutdown, Some(&live_tip)) {
+    if let Err(e) = sync::sync_headers(&mut peer, &mut chain, &store, &shutdown) {
         eprintln!("itc-node: header sync error: {e}");
     }
     println!(
@@ -231,11 +249,10 @@ fn main() {
         "itc-node: downloading block bodies (tip height {}) — this may take a while ...",
         chain.tip_height()
     );
-    // Flush tip in case shutdown was requested during header sync
+    // Checkpoint in case shutdown was requested during header sync.
     if shutdown.load(Ordering::Relaxed) {
-        let _ = store.put_tip(chain.tip_height(), &chain.tip_hash());
-        *live_tip.lock().unwrap() = (chain.tip_height(), chain.tip_hash());
-        eprintln!("itc-node: tip flushed at height {} — clean shutdown", chain.tip_height());
+        store.flush();
+        eprintln!("itc-node: flushed at height {} — clean shutdown", chain.tip_height());
         return;
     }
 
@@ -245,7 +262,6 @@ fn main() {
         ),
         Err(e) => eprintln!("itc-node: block download error (partial progress saved): {e}"),
     }
-    *live_tip.lock().unwrap() = (chain.tip_height(), chain.tip_hash());
     println!("itc-node: engine head after sync: {}", store.head());
 
     // ── 3b. Bridge deposit oracle scan ───────────────────────────────────────
@@ -277,11 +293,10 @@ fn main() {
         println!("itc-node[oracle]: scan done — {total_minted} deposit(s) confirmed");
     }
 
-    // Flush tip on block-sync shutdown
+    // Checkpoint on block-sync shutdown.
     if shutdown.load(Ordering::Relaxed) {
-        let _ = store.put_tip(chain.tip_height(), &chain.tip_hash());
-        *live_tip.lock().unwrap() = (chain.tip_height(), chain.tip_hash());
-        eprintln!("itc-node: tip flushed at height {} — clean shutdown", chain.tip_height());
+        store.flush();
+        eprintln!("itc-node: flushed at height {} — clean shutdown", chain.tip_height());
         return;
     }
 
@@ -293,18 +308,17 @@ fn main() {
         let follow_db   = Arc::clone(&store.db);
         let follow_ep   = endpoint.to_string();
         let follow_osh  = oracle_start_height;
-        let follow_tip  = Arc::clone(&live_tip); // share with ctrlc handler
         std::thread::spawn(move || {
             println!("itc-node[l1-follow]: live sync thread started (60s interval)");
             loop {
                 std::thread::sleep(std::time::Duration::from_secs(60));
                 let s = crate::store::Store::from_arc_db(Arc::clone(&follow_db));
-                let (cur_h, cur_hash) = s.get_tip().unwrap_or((0, [0u8; 32]));
+                let (cur_h, cur_hash) = s.tip_header().unwrap_or((0, [0u8; 32]));
                 let Ok((mut peer, _)) = crate::anchor::fetch_anchor_tip(&follow_ep, proto::MAGIC_MAIN)
                 else { continue };
                 let mut chain = crate::chain::HeaderChain::resume_from_tip(cur_h, cur_hash);
                 let flag = AtomicBool::new(false);
-                if sync::sync_headers(&mut peer, &mut chain, &s, &flag, None).is_err() { continue }
+                if sync::sync_headers(&mut peer, &mut chain, &s, &flag).is_err() { continue }
                 let new_h = chain.tip_height();
                 if new_h <= cur_h { continue }
                 let _ = sync::sync_blocks(&mut peer, &chain, &s, (cur_h + 1).max(follow_osh), &flag);
@@ -321,9 +335,9 @@ fn main() {
                         }
                     }
                 }
-                let _ = s.put_tip(new_h, &chain.tip_hash());
-                // Update shared tip so Ctrl+C handler flushes the real current height
-                *follow_tip.lock().unwrap() = (new_h, chain.tip_hash());
+                // sync_headers/sync_blocks already checkpoint on their own cadence
+                // (every round / every ~2000 blocks); tip_header() reflects the real
+                // last-connected header directly, no shadow copy to update here.
                 println!("[L1] live: synced to height {new_h}");
             }
         });

@@ -13,7 +13,7 @@ path = "src/main.rs"
 [dependencies]
 itc-proto = { path = "../itc-proto" }
 # The NEDB v2 engine, used directly as the storage backend (already Rust — no FFI).
-nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", tag = "v2.5.2", package = "nedb-engine" }
+nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", tag = "v2.5.44", package = "nedb-engine" }
 serde_json = "1"
 itc-anchor = { path = "../itc-anchor" }
 itc-rpc    = { path = "../itc-rpc" }
