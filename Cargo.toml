@@ -7,7 +7,15 @@ edition = "2021"
 license = "MIT"
 authors = ["Interchained LLC"]
 
-# Slice 1 (this commit): workspace + ITC protocol constants + instant-boot
-# trust-anchor architecture, dependency-free so it builds offline.
-# Next slices add: the rust-bitcoin fork (itc-proto becomes it), nedb-engine
-# (storage), and an ElectrumX client (wallet).
+# Single source of truth for the nedb-engine git pin. Every crate that touches
+# storage (itc-node, itc-evm, itc-anchor, itc-oracle, itc-rpc) MUST reference
+# this via `nedb-engine.workspace = true` rather than declaring its own git+tag
+# line. Cargo treats two different tags/revs of the same git dependency as two
+# DIFFERENT types (even when the source is identical where they overlap) — a
+# crate left on an older tag while another was bumped fails to compile with
+# "expected nedb_engine::db::Db, found Db" the moment a Db value crosses a
+# function boundary between them. One line to bump here keeps the whole
+# workspace on one resolved copy, structurally, instead of relying on every
+# future bump remembering to touch N Cargo.tomls in lockstep.
+[workspace.dependencies]
+nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", tag = "v2.5.44", package = "nedb-engine" }

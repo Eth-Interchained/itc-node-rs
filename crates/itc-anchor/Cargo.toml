@@ -10,7 +10,7 @@ description = "ITC-L2 L1 anchor — builds and broadcasts OP_RETURN sovereignty 
 itc-proto = { path = "../itc-proto" }
 
 # NEDB — reads the current Merkle head for the OP_RETURN payload
-nedb-engine = { git = "https://github.com/Eth-Interchained/nedb", tag = "v2.5.2", package = "nedb-engine" }
+nedb-engine.workspace = true
 
 # secp256k1 — P2PKH signing for the anchor transaction (Bitcoin-compatible)
 secp256k1 = { version = "0.27", features = ["rand-std"] }
