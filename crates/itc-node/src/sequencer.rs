@@ -9,6 +9,11 @@
 //!
 //! The sequencer is authoritative for L2 block ordering. No consensus needed
 //! in v1 — this is a single-operator PoA sidechain.
+//!
+//! Durability: shares one `Arc<Db>` with L1 header/block sync, so a single
+//! `flush_all()` checkpoints L1 progress + L2 receipts together. Checkpoints every
+//! `BLOCK_FLUSH_EVERY` produced blocks (not per-put) — see `store.rs` / `sync.rs`
+//! for the matching L1 cadence, and `main.rs` for the exit-time flush.
 
 use std::collections::VecDeque;
 use std::sync::{
@@ -26,6 +31,9 @@ use itc_oracle::ExitScanner;
 
 /// L2 block time in seconds.
 pub const BLOCK_TIME_SECS: u64 = 5;
+
+/// L2 checkpoint cadence — flush every N produced blocks (not per-put).
+const BLOCK_FLUSH_EVERY: u64 = 500;
 
 /// A pending L2 transaction in the mempool.
 #[derive(Clone, Debug)]
@@ -108,13 +116,20 @@ impl Sequencer {
             mem.drain(..n).collect()
         };
 
-        // Live status line —  overwrites, no log spam
-        {
-            let l1_h: i64 = self.db
-                .get("index", "tip")
-                .and_then(|n| n.data.get("height").and_then(|v| v.as_i64()))
-                .unwrap_or(0);
-            eprint!("\r  [L1] {l1_h}  |  [L2] {block_num}   ");
+        // Live status line -- overwrites, no log spam. L1 height comes from
+        // the engine's durable per-collection tip (nedb_engine::Db::tip_collection),
+        // the same primitive store.rs uses for boot resume, not a shadow copy.
+        let l1_h = crate::store::Store::from_arc_db(Arc::clone(&self.db))
+            .tip_header()
+            .map(|(h, _)| h)
+            .unwrap_or(0);
+        eprint!("\r  [L1] {l1_h}  |  [L2] {block_num}   ");
+
+        // L2 checkpoint cadence: flush every BLOCK_FLUSH_EVERY produced blocks,
+        // regardless of whether THIS block had txs, so a long empty stretch
+        // doesn't widen the durability gap before the next real write.
+        if block_num % BLOCK_FLUSH_EVERY == 0 {
+            self.db.flush_all();
         }
 
         if pending.is_empty() {

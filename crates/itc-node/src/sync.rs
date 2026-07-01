@@ -1,7 +1,17 @@
 //! Sync — header sync and full block body download from the anchor peer.
+//!
+//! Durability cadence (v2.5.44+): flush on natural batch boundaries, not per-put.
+//! `store.flush()` is a real `flush_all()` (WAL + segment sync + MANIFEST) — cheap
+//! enough to call every round/batch, not so cheap it belongs on the hot per-header
+//! or per-block path. Headers checkpoint every round (`getheaders` returns up to
+//! 2000 at a time); blocks checkpoint every ~2000 downloaded. On a hard exit
+//! (Ctrl+C / SIGTERM) `main.rs`'s handler calls `store.flush()` directly — no
+//! shadow "last known tip" state needs tracking here anymore: `store.tip_header()`
+//! (backed by `nedb_engine::Db::tip_collection`) always reflects the real
+//! last-connected header, kept current synchronously on every write.
 
 use std::io;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use itc_proto::block::BlockHeader;
 use itc_proto::hashes::to_internal_hex;
@@ -14,17 +24,20 @@ use crate::store::Store;
 /// allow up to 128 outstanding block requests, but we start small.
 const BLOCK_BATCH: i32 = 16;
 
+/// L1 block-download checkpoint cadence — flush every N downloaded bodies.
+const BLOCK_FLUSH_EVERY: u64 = 2000;
+
 // ── Header sync ──────────────────────────────────────────────────────────────
 
 /// Sync headers forward from `peer` into `chain`, persisting into `store`.
-/// `live_tip` is updated after every batch so the ctrlc handler always has a
-/// real tip height to flush — even if killed mid-sync.
+/// Checkpoints (flushes) at the end of every round — `getheaders` returns up to
+/// 2000 headers per round, so this is a natural ~2000-header cadence, not a
+/// per-put flush.
 pub fn sync_headers(
     peer: &mut Peer,
     chain: &mut HeaderChain,
     store: &Store,
     shutdown: &AtomicBool,
-    live_tip: Option<&Arc<Mutex<(i32, [u8; 32])>>>,
 ) -> io::Result<()> {
     let target = peer.peer_height;
     let mut rounds = 0u32;
@@ -50,13 +63,9 @@ pub fn sync_headers(
             }
         }
         store.put_headers_batch(&to_persist)?;
-        store.put_tip(chain.tip_height(), &chain.tip_hash())?;
-        // Update shared tip so ctrlc handler always has a real height to flush
-        if let Some(lt) = live_tip {
-            if let Ok(mut g) = lt.lock() {
-                *g = (chain.tip_height(), chain.tip_hash());
-            }
-        }
+        // Checkpoint: durable tip resume no longer needs a manually-tracked shadow
+        // copy — tip_header() reads the real last-connected header directly.
+        store.flush();
 
         let after = chain.tip_height();
         // Single-line overwriting progress bar
@@ -89,7 +98,9 @@ pub fn sync_headers(
 
 /// Download full block bodies for every block we have a header for but no body.
 /// Walks the active chain from height 1 to tip, batching getdata requests.
-/// Already-stored blocks are skipped (idempotent, resume-safe).
+/// Already-stored blocks are skipped (idempotent, resume-safe). Checkpoints
+/// (flushes) every `BLOCK_FLUSH_EVERY` downloaded bodies, plus once more at the
+/// end so a short final stretch isn't left unflushed.
 /// Returns (downloaded, skipped) counts.
 pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store, start_height: i32, shutdown: &AtomicBool) -> io::Result<(u64, u64)> {
     let tip = chain.tip_height();
@@ -98,6 +109,7 @@ pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store, start_he
     }
     let mut downloaded = 0u64;
     let mut skipped = 0u64;
+    let mut since_flush = 0u64;
     let mut height = start_height.max(1);
 
     while height <= tip {
@@ -120,6 +132,7 @@ pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store, start_he
                 let hash_hex = to_internal_hex(&block.block_hash());
                 store.put_block(&hash_hex, &block.raw)?;
                 downloaded += 1;
+                since_flush += 1;
             }
             if downloaded % 100 == 0 && downloaded > 0 {
                 println!(
@@ -127,9 +140,16 @@ pub fn sync_blocks(peer: &mut Peer, chain: &HeaderChain, store: &Store, start_he
                     height + BLOCK_BATCH
                 );
             }
+            if since_flush >= BLOCK_FLUSH_EVERY {
+                store.flush();
+                since_flush = 0;
+            }
         }
 
         height = batch_end + 1;
+    }
+    if since_flush > 0 {
+        store.flush(); // final partial stretch — don't leave it unflushed
     }
     Ok((downloaded, skipped))
 }
